@@ -1,0 +1,34 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": false,
+
+        "homeId": {
+          ".write": "auth != null && auth.uid == $uid && (!data.exists() || newData.val() == data.val())",
+          ".validate": "newData.isString() && newData.val().matches(/^[A-Za-z0-9_-]{3,32}$/)"
+        }
+      }
+    },
+
+    "homes": {
+      "$homeId": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('homeId').val() == $homeId",
+        ".write": false,
+
+        "measurements": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('homeId').val() == $homeId"
+        },
+        "commands": {
+          "lamp": {
+            ".write": "auth != null && root.child('users').child(auth.uid).child('homeId').val() == $homeId"
+          }
+        }
+      }
+    }
+  }
+}

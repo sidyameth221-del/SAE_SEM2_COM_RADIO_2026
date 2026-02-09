@@ -1,0 +1,17 @@
+.DS_Store
+Thumbs.db
+
+# PlatformIO
+.pio/
+**/.pio/
+
+# Local VS Code settings
+.vscode/
+
+# Secrets
+**/include/secrets.h
+
+# Web
+web/node_modules/
+web/.next/
+web/.env.local

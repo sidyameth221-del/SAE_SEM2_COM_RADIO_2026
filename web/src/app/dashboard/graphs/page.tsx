@@ -53,6 +53,31 @@ function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
+function formatParis(iso: string | null | undefined): string {
+  if (!iso) return "--";
+  const d = new Date(iso);
+  if (Number.isNaN(d.valueOf())) return iso;
+  return new Intl.DateTimeFormat("fr-FR", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function downsample<T>(arr: T[], maxPoints: number): T[] {
+  if (arr.length <= maxPoints) return arr;
+  if (maxPoints < 2) return arr.slice(0, 1);
+  const out: T[] = [];
+  for (let i = 0; i < maxPoints; i++) {
+    const idx = Math.round((i * (arr.length - 1)) / (maxPoints - 1));
+    out.push(arr[idx]);
+  }
+  return out;
+}
+
 function buildLinePath(points: { x: number; y: number }[]): string {
   if (points.length === 0) return "";
   return points
@@ -65,13 +90,15 @@ function normalizeSeries(
   accessor: (p: GraphPoint) => number | null,
   width: number,
   height: number
-): { path: string; min: number | null; max: number | null } {
+): { path: string; min: number | null; max: number | null; last: number | null; lastX: number | null; lastY: number | null } {
   const values: number[] = [];
   for (const p of pts) {
     const v = accessor(p);
     if (typeof v === "number" && Number.isFinite(v)) values.push(v);
   }
-  if (values.length === 0 || pts.length < 2) return { path: "", min: null, max: null };
+  if (values.length === 0 || pts.length < 2) {
+    return { path: "", min: null, max: null, last: null, lastX: null, lastY: null };
+  }
 
   let min = Math.min(...values);
   let max = Math.max(...values);
@@ -82,15 +109,130 @@ function normalizeSeries(
 
   const xStep = width / (pts.length - 1);
   const xy: { x: number; y: number }[] = [];
+  let last: number | null = null;
+  let lastX: number | null = null;
+  let lastY: number | null = null;
   for (let i = 0; i < pts.length; i++) {
     const v = accessor(pts[i]);
     if (typeof v !== "number" || !Number.isFinite(v)) continue;
     const x = i * xStep;
     const t = (v - min) / (max - min);
     const y = height - t * height;
-    xy.push({ x, y: clamp(y, 0, height) });
+    const cy = clamp(y, 0, height);
+    xy.push({ x, y: cy });
+    last = v;
+    lastX = x;
+    lastY = cy;
   }
-  return { path: buildLinePath(xy), min, max };
+  return { path: buildLinePath(xy), min, max, last, lastX, lastY };
+}
+
+function ChartCard(props: {
+  title: string;
+  unit: string;
+  points: GraphPoint[];
+  inside: (p: GraphPoint) => number | null;
+  outside: (p: GraphPoint) => number | null;
+}) {
+  const width = 900;
+  const height = 220;
+
+  const inS = normalizeSeries(props.points, props.inside, width, height);
+  const outS = normalizeSeries(props.points, props.outside, width, height);
+  const empty = !inS.path && !outS.path;
+
+  const from = props.points.length ? props.points[0].ts : null;
+  const to = props.points.length ? props.points[props.points.length - 1].ts : null;
+
+  return (
+    <div className="rounded-lg border border-foreground/15 bg-background/60 p-3 sm:p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-sm text-foreground/60">{props.title}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-foreground/60">
+            <span>
+              Période: <span className="font-mono">{formatParis(from)}</span> →{" "}
+              <span className="font-mono">{formatParis(to)}</span>
+            </span>
+            <span>
+              Points: <span className="font-mono">{props.points.length}</span>
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <span className="inline-flex items-center gap-2 text-foreground/80">
+            <span className="inline-block h-[2px] w-8 bg-current" /> IN
+          </span>
+          <span className="inline-flex items-center gap-2 text-foreground/60">
+            <span className="inline-block h-[2px] w-8 bg-current opacity-60" style={{ backgroundImage: "linear-gradient(to right, currentColor 60%, transparent 0%)", backgroundSize: "10px 2px" }} />{" "}
+            OUT
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-3 text-xs text-foreground/60">
+        <span>
+          IN dernier: <span className="font-mono">{inS.last ?? "--"}</span> {props.unit}
+        </span>
+        <span>
+          OUT dernier: <span className="font-mono">{outS.last ?? "--"}</span> {props.unit}
+        </span>
+        <span>
+          Min/Max: <span className="font-mono">{inS.min ?? outS.min ?? "--"}</span> →{" "}
+          <span className="font-mono">{inS.max ?? outS.max ?? "--"}</span> {props.unit}
+        </span>
+      </div>
+
+      <div className="mt-3 h-56 w-full">
+        {empty ? (
+          <div className="text-sm text-foreground/60">Pas assez de données.</div>
+        ) : (
+          <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full text-foreground">
+            {/* grid */}
+            <g opacity="0.25" stroke="currentColor" strokeWidth="1">
+              <line x1={0} y1={height * 0.25} x2={width} y2={height * 0.25} />
+              <line x1={0} y1={height * 0.5} x2={width} y2={height * 0.5} />
+              <line x1={0} y1={height * 0.75} x2={width} y2={height * 0.75} />
+            </g>
+
+            {/* series */}
+            <path d={inS.path} fill="none" stroke="currentColor" strokeWidth="2" />
+            <path
+              d={outS.path}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              opacity="0.6"
+              strokeDasharray="8 6"
+            />
+
+            {/* last point markers */}
+            {typeof inS.lastX === "number" && typeof inS.lastY === "number" ? (
+              <circle cx={inS.lastX} cy={inS.lastY} r={4} fill="currentColor" />
+            ) : null}
+            {typeof outS.lastX === "number" && typeof outS.lastY === "number" ? (
+              <circle cx={outS.lastX} cy={outS.lastY} r={4} fill="currentColor" opacity={0.6} />
+            ) : null}
+
+            {/* y labels */}
+            <g fill="currentColor" opacity="0.7">
+              {inS.max != null || outS.max != null ? (
+                <text x={6} y={14} fontSize={12}>
+                  {(inS.max ?? outS.max)?.toFixed(1)}{props.unit}
+                </text>
+              ) : null}
+              {inS.min != null || outS.min != null ? (
+                <text x={6} y={height - 6} fontSize={12}>
+                  {(inS.min ?? outS.min)?.toFixed(1)}{props.unit}
+                </text>
+              ) : null}
+            </g>
+          </svg>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function GraphsPage() {
@@ -163,7 +305,7 @@ export default function GraphsPage() {
           outsideH: asNumber(node?.outside?.humidity),
         });
       });
-      setGraphPoints(pts);
+      setGraphPoints(downsample(pts, 120));
     });
 
     return () => {
@@ -171,28 +313,6 @@ export default function GraphsPage() {
       unsubGraph();
     };
   }, [db, homeId]);
-
-  const tempPaths = useMemo(() => {
-    const width = 800;
-    const height = 160;
-    return {
-      width,
-      height,
-      inside: normalizeSeries(graphPoints, (p) => p.insideT, width, height),
-      outside: normalizeSeries(graphPoints, (p) => p.outsideT, width, height),
-    };
-  }, [graphPoints]);
-
-  const humPaths = useMemo(() => {
-    const width = 800;
-    const height = 160;
-    return {
-      width,
-      height,
-      inside: normalizeSeries(graphPoints, (p) => p.insideH, width, height),
-      outside: normalizeSeries(graphPoints, (p) => p.outsideH, width, height),
-    };
-  }, [graphPoints]);
 
   return (
     <div className="min-h-screen bg-background text-foreground px-4 py-8 sm:px-6">
@@ -225,51 +345,29 @@ export default function GraphsPage() {
         </section>
 
         <section className="rounded-xl border border-foreground/15 bg-foreground/5 p-4 sm:p-5">
-          <div className="text-sm text-foreground/60">Température (IN / OUT)</div>
-          <div className="mt-3 h-40 w-full">
-            {(() => {
-              const empty = !tempPaths.inside.path && !tempPaths.outside.path;
-              if (empty) return <div className="text-sm text-foreground/60">Pas assez de données.</div>;
-              return (
-                <svg viewBox={`0 0 ${tempPaths.width} ${tempPaths.height}`} className="h-full w-full text-foreground">
-                  <path d={tempPaths.inside.path} fill="none" stroke="currentColor" strokeWidth="2" />
-                  <path
-                    d={tempPaths.outside.path}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    opacity="0.6"
-                    strokeDasharray="6 4"
-                  />
-                </svg>
-              );
-            })()}
+          <div className="text-lg font-semibold">Température</div>
+          <div className="mt-3">
+            <ChartCard
+              title="Température (IN / OUT)"
+              unit="°C"
+              points={graphPoints}
+              inside={(p) => p.insideT}
+              outside={(p) => p.outsideT}
+            />
           </div>
-          <div className="mt-2 text-xs text-foreground/60">IN = ligne pleine, OUT = pointillée</div>
         </section>
 
         <section className="rounded-xl border border-foreground/15 bg-foreground/5 p-4 sm:p-5">
-          <div className="text-sm text-foreground/60">Humidité (IN / OUT)</div>
-          <div className="mt-3 h-40 w-full">
-            {(() => {
-              const empty = !humPaths.inside.path && !humPaths.outside.path;
-              if (empty) return <div className="text-sm text-foreground/60">Pas assez de données.</div>;
-              return (
-                <svg viewBox={`0 0 ${humPaths.width} ${humPaths.height}`} className="h-full w-full text-foreground">
-                  <path d={humPaths.inside.path} fill="none" stroke="currentColor" strokeWidth="2" />
-                  <path
-                    d={humPaths.outside.path}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    opacity="0.6"
-                    strokeDasharray="6 4"
-                  />
-                </svg>
-              );
-            })()}
+          <div className="text-lg font-semibold">Humidité</div>
+          <div className="mt-3">
+            <ChartCard
+              title="Humidité (IN / OUT)"
+              unit="%"
+              points={graphPoints}
+              inside={(p) => p.insideH}
+              outside={(p) => p.outsideH}
+            />
           </div>
-          <div className="mt-2 text-xs text-foreground/60">IN = ligne pleine, OUT = pointillée</div>
         </section>
       </div>
     </div>

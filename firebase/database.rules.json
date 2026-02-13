@@ -27,6 +27,12 @@
           "lamp": {
             ".write": "auth != null && root.child('users').child(auth.uid).child('homeId').val() == $homeId"
           }
+        },
+        "settings": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('homeId').val() == $homeId",
+          "logPeriodSec": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 3600"
+          }
         }
       }
     }

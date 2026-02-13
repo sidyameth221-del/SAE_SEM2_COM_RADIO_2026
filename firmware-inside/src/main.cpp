@@ -28,6 +28,8 @@
 
 static constexpr uint32_t SENSOR_PERIOD_MS = 3000;
 static constexpr uint32_t FIREBASE_PERIOD_MS = 500;
+static constexpr uint32_t SETTINGS_PERIOD_MS = 10000;
+static constexpr uint32_t DEFAULT_LOG_PERIOD_MS = 3000;
 
 struct SensorPayload {
   float temperature;
@@ -54,8 +56,28 @@ RealtimeDatabase Database;
 static uint32_t cmdSeq = 0;
 static bool lampOn = false;
 
+static uint32_t logPeriodMs = DEFAULT_LOG_PERIOD_MS;
+static uint32_t lastLogMs = 0;
+
 static bool outsideValid = false;
 static SensorPayload outsideLast{};
+
+static void firebaseReadSettings() {
+  if (!app.ready()) return;
+
+  const String path = String("/homes/") + HOME_ID + "/settings/logPeriodSec";
+  const String s = Database.get<String>(aClient, path.c_str());
+  if (aClient.lastError().code() != 0) return;
+
+  const long sec = s.toInt();
+  if (sec < 1 || sec > 3600) return;
+
+  const uint32_t nextMs = (uint32_t)sec * 1000U;
+  if (nextMs != logPeriodMs) {
+    logPeriodMs = nextMs;
+    Serial.printf("[SET] logPeriodSec=%ld\n", sec);
+  }
+}
 
 static String isoNowUtc() {
   time_t now = time(nullptr);
@@ -299,17 +321,29 @@ void loop() {
 
   static uint32_t lastSensorMs = 0;
   static uint32_t lastFirebaseMs = 0;
+  static uint32_t lastSettingsMs = 0;
 
   const uint32_t nowMs = millis();
+
+  if (nowMs - lastSettingsMs >= SETTINGS_PERIOD_MS) {
+    lastSettingsMs = nowMs;
+    firebaseReadSettings();
+  }
+
   if (nowMs - lastSensorMs >= SENSOR_PERIOD_MS) {
     lastSensorMs = nowMs;
     const float inH = dht.readHumidity();
     const float inT = dht.readTemperature();
     if (!isnan(inH) && !isnan(inT)) {
-      const String ts = isoNowUtc();
       oledRender(inT, inH, frNowLocalShort());
-      firebaseWriteMeasurements(ts, inT, inH);
-      Serial.printf("[IN] t=%.1f h=%.1f ts=%s\n", inT, inH, ts.c_str());
+      if (nowMs - lastLogMs >= logPeriodMs) {
+        lastLogMs = nowMs;
+        const String ts = isoNowUtc();
+        firebaseWriteMeasurements(ts, inT, inH);
+        Serial.printf("[IN] t=%.1f h=%.1f ts=%s\n", inT, inH, ts.c_str());
+      } else {
+        Serial.printf("[IN] t=%.1f h=%.1f (no log)\n", inT, inH);
+      }
     } else {
       Serial.println("[DHT] inside read failed");
     }

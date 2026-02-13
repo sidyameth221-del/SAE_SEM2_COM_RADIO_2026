@@ -33,6 +33,21 @@ type LampNode = {
   timestamp?: string;
 };
 
+type HomeSettingsNode = {
+  logPeriodSec?: number | string;
+};
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 function firstChild(snapshot: DataSnapshot): { key: string; val: unknown } | null {
   let found: { key: string; val: unknown } | null = null;
   snapshot.forEach((child) => {
@@ -65,6 +80,11 @@ function formatParis(iso: string | null | undefined): string {
   }).format(d);
 }
 
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+
+
 export default function DashboardPage() {
   const router = useRouter();
 
@@ -86,6 +106,11 @@ export default function DashboardPage() {
 
   const [lampState, setLampState] = useState<"ON" | "OFF">("OFF");
   const [lampTs, setLampTs] = useState<string | null>(null);
+
+  const [logPeriodSec, setLogPeriodSec] = useState<number | null>(null);
+  const [logPeriodInput, setLogPeriodInput] = useState<string>("");
+  const [logSaveBusy, setLogSaveBusy] = useState<boolean>(false);
+  const [logSaveError, setLogSaveError] = useState<string | null>(null);
 
   const [searchInput, setSearchInput] = useState<string>("");
   const [searchBusy, setSearchBusy] = useState<boolean>(false);
@@ -123,6 +148,11 @@ export default function DashboardPage() {
       setSearchInsideH(null);
       setSearchOutsideT(null);
       setSearchOutsideH(null);
+
+      setLogPeriodSec(null);
+      setLogPeriodInput("");
+      setLogSaveBusy(false);
+      setLogSaveError(null);
       if (!u) router.push("/login");
     });
     return () => unsub();
@@ -156,10 +186,10 @@ export default function DashboardPage() {
       if (!child) return;
       setLatestTs(child.key);
       const node = child.val as MeasurementsNode;
-      setInsideT(typeof node?.inside?.temperature === "number" ? node.inside.temperature : null);
-      setInsideH(typeof node?.inside?.humidity === "number" ? node.inside.humidity : null);
-      setOutsideT(typeof node?.outside?.temperature === "number" ? node.outside.temperature : null);
-      setOutsideH(typeof node?.outside?.humidity === "number" ? node.outside.humidity : null);
+      setInsideT(asNumber(node?.inside?.temperature));
+      setInsideH(asNumber(node?.inside?.humidity));
+      setOutsideT(asNumber(node?.outside?.temperature));
+      setOutsideH(asNumber(node?.outside?.humidity));
     });
 
     const lampUnsub = onValue(ref(db, `homes/${homeId}/commands/lamp`), (snap) => {
@@ -169,11 +199,46 @@ export default function DashboardPage() {
       if (typeof node.timestamp === "string") setLampTs(node.timestamp);
     });
 
+    const settingsUnsub = onValue(ref(db, `homes/${homeId}/settings`), (snap) => {
+      const node = snap.val() as HomeSettingsNode | null;
+      const sec = asNumber(node?.logPeriodSec);
+      if (typeof sec === "number") {
+        const cleaned = Math.round(sec);
+        setLogPeriodSec(cleaned);
+        setLogPeriodInput(String(cleaned));
+      }
+    });
+
     return () => {
       measUnsub();
       lampUnsub();
+      settingsUnsub();
     };
   }, [db, homeId, user]);
+
+  async function saveLogPeriod() {
+    if (!db || !homeId) return;
+    setLogSaveError(null);
+
+    const raw = logPeriodInput.trim();
+    const n = Number(raw);
+    if (!Number.isFinite(n)) {
+      setLogSaveError("Fréquence invalide.");
+      return;
+    }
+    const sec = clamp(Math.round(n), 1, 3600);
+
+    setLogSaveBusy(true);
+    try {
+      await set(ref(db, `homes/${homeId}/settings/logPeriodSec`), sec);
+      setLogPeriodSec(sec);
+      setLogPeriodInput(String(sec));
+    } catch (err) {
+      setLogSaveError(err instanceof Error ? err.message : "Erreur lors de l'enregistrement");
+    } finally {
+      setLogSaveBusy(false);
+    }
+  }
 
   async function saveHomeId() {
     if (!db || !user) return;
@@ -248,10 +313,10 @@ export default function DashboardPage() {
 
       setSearchTs(child.key);
       const node = child.val as MeasurementsNode;
-      setSearchInsideT(typeof node?.inside?.temperature === "number" ? node.inside.temperature : null);
-      setSearchInsideH(typeof node?.inside?.humidity === "number" ? node.inside.humidity : null);
-      setSearchOutsideT(typeof node?.outside?.temperature === "number" ? node.outside.temperature : null);
-      setSearchOutsideH(typeof node?.outside?.humidity === "number" ? node.outside.humidity : null);
+      setSearchInsideT(asNumber(node?.inside?.temperature));
+      setSearchInsideH(asNumber(node?.inside?.humidity));
+      setSearchOutsideT(asNumber(node?.outside?.temperature));
+      setSearchOutsideH(asNumber(node?.outside?.humidity));
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : "Erreur recherche");
     } finally {
@@ -273,12 +338,20 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
             <p className="text-sm text-foreground/60">Mesures temps réel + commande lampe</p>
           </div>
-          <button
-            className="inline-flex items-center justify-center rounded-md border border-foreground/15 bg-background px-3 py-2 text-sm hover:bg-foreground/5"
-            onClick={logout}
-          >
-            Déconnexion
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="inline-flex items-center justify-center rounded-md border border-foreground/15 bg-background px-3 py-2 text-sm hover:bg-foreground/5"
+              onClick={() => router.push("/dashboard/graphs")}
+            >
+              Graphes
+            </button>
+            <button
+              className="inline-flex items-center justify-center rounded-md border border-foreground/15 bg-background px-3 py-2 text-sm hover:bg-foreground/5"
+              onClick={logout}
+            >
+              Déconnexion
+            </button>
+          </div>
         </header>
 
         <section className="rounded-xl border border-foreground/15 bg-foreground/5 p-4 sm:p-5">
@@ -290,6 +363,9 @@ export default function DashboardPage() {
           ) : null}
           {homeSaveError ? (
             <div className="mb-3 text-sm text-red-600 break-words">{homeSaveError}</div>
+          ) : null}
+          {logSaveError ? (
+            <div className="mb-3 text-sm text-red-600 break-words">{logSaveError}</div>
           ) : null}
 
           <div className="mb-4 rounded-lg border border-foreground/15 bg-background/60 p-3 sm:p-4">
@@ -330,6 +406,31 @@ export default function DashboardPage() {
                 </div>
               </div>
             ) : null}
+          </div>
+
+          <div className="rounded-lg border border-foreground/15 bg-background/60 p-3 sm:p-4">
+            <div className="text-sm text-foreground/60">Enregistrement</div>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm">
+                Fréquence d'enregistrement dans la base: <span className="font-mono">{logPeriodSec ?? "--"}</span> s
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  className="w-full rounded-md border border-foreground/15 bg-background/60 px-3 py-2 text-sm outline-none focus:border-foreground/30 sm:w-40"
+                  value={logPeriodInput}
+                  onChange={(e) => setLogPeriodInput(e.target.value)}
+                  placeholder="Secondes (1-3600)"
+                  inputMode="numeric"
+                />
+                <button
+                  className="inline-flex items-center justify-center rounded-md bg-foreground text-background px-4 py-2 text-sm font-medium disabled:opacity-60"
+                  onClick={saveLogPeriod}
+                  disabled={!homeId || logSaveBusy}
+                >
+                  {logSaveBusy ? "..." : "Enregistrer"}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
